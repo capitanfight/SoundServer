@@ -97,7 +97,7 @@ fi
 # ---------- compile -----------------------------------------------------------
 
 info "Compiling SoundServer.java..."
-javac -d "$BIN_DIR" "$REPO_DIR/SoundServer.java" || error "Compilation failed."
+javac -d "$BIN_DIR" "$REPO_DIR/src/SoundServer.java" || error "Compilation failed."
 info "Compilation successful."
 
 # ---------- install exec_sound.sh into ~/.local/bin --------------------------
