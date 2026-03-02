@@ -53,7 +53,7 @@ fi
 
 mkdir -p "$BIN_DIR"
 
-SERVER_SRC="$REPO_DIR/SoundServer.java"
+SERVER_SRC="$REPO_DIR/src/SoundServer.java"
 SERVER_CLASS="$BIN_DIR/SoundServer.class"
 
 # Force recompile if source is newer than class file, or flagged by git pull
