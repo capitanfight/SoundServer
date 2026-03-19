@@ -15,6 +15,8 @@ public class SoundServer {
     private static String currentlyPlayingName = null;
     private static boolean isPlaying = false;
     private static boolean shouldLoop = false;
+    private static boolean isMuted = false;
+    private static int lastVolume = 50; // last known volume before mute
     private static String serverName;
 
     public static void main(String[] args) {
@@ -186,6 +188,15 @@ public class SoundServer {
                             if (parts.length < 2) { sendResponse(clientSocket, "ERROR: Missing volume level (0-100)"); break; }
                             sendResponse(clientSocket, setVolume(parts[1]));
                             break;
+                        case "GETVOL":
+                            sendResponse(clientSocket, getVolume());
+                            break;
+                        case "MUTE":
+                            sendResponse(clientSocket, muteVolume());
+                            break;
+                        case "UNMUTE":
+                            sendResponse(clientSocket, unmuteVolume());
+                            break;
                         default:
                             sendResponse(clientSocket, "ERROR: Unknown command: " + action);
                     }
@@ -214,7 +225,7 @@ public class SoundServer {
 
     private static String toggleLoop() {
         shouldLoop = !shouldLoop;
-        return shouldLoop ? "Loop on" : "Loop off";
+        return shouldLoop ? "OK: Loop on" : "OK: Loop off";
     }
 
     private static void sendResponse(Socket socket, String response) throws IOException {
@@ -224,9 +235,83 @@ public class SoundServer {
     }
 
     /**
+     * Reads the current system volume using amixer or pactl.
+     * Returns "OK: <0-100>" or "ERROR: ...".
+     */
+    private static String getVolume() {
+        // Try pactl first
+        try {
+            Process p = new ProcessBuilder("pactl", "get-sink-volume", "@DEFAULT_SINK@")
+                    .redirectErrorStream(true).start();
+            String out = new String(p.getInputStream().readAllBytes());
+            p.waitFor();
+            // Output looks like: "Volume: front-left: 65536 /  100% / ..."
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)%").matcher(out);
+            if (m.find()) {
+                lastVolume = Integer.parseInt(m.group(1));
+                return "OK: " + lastVolume;
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback: amixer
+        try {
+            Process p = new ProcessBuilder("amixer", "get", "Master")
+                    .redirectErrorStream(true).start();
+            String out = new String(p.getInputStream().readAllBytes());
+            p.waitFor();
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)%").matcher(out);
+            if (m.find()) {
+                lastVolume = Integer.parseInt(m.group(1));
+                return "OK: " + lastVolume;
+            }
+        } catch (Exception ignored) {}
+
+        return "OK: " + lastVolume; // return cached value as fallback
+    }
+
+    /**
+     * Mutes the system audio using pactl or amixer.
+     */
+    private static String muteVolume() {
+        // Save current volume before muting
+        getVolume(); // updates lastVolume
+
+        String[] pactlCmd = {"pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"};
+        if (runCommand(pactlCmd)) {
+            isMuted = true;
+            System.out.println("Muted via pactl");
+            return "OK: Muted";
+        }
+        String[] amixerCmd = {"amixer", "-q", "sset", "Master", "mute"};
+        if (runCommand(amixerCmd)) {
+            isMuted = true;
+            System.out.println("Muted via amixer");
+            return "OK: Muted";
+        }
+        return "ERROR: Could not mute (neither pactl nor amixer succeeded)";
+    }
+
+    /**
+     * Unmutes the system audio using pactl or amixer.
+     */
+    private static String unmuteVolume() {
+        String[] pactlCmd = {"pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"};
+        if (runCommand(pactlCmd)) {
+            isMuted = false;
+            System.out.println("Unmuted via pactl");
+            return "OK: Unmuted";
+        }
+        String[] amixerCmd = {"amixer", "-q", "sset", "Master", "unmute"};
+        if (runCommand(amixerCmd)) {
+            isMuted = false;
+            System.out.println("Unmuted via amixer");
+            return "OK: Unmuted";
+        }
+        return "ERROR: Could not unmute (neither pactl nor amixer succeeded)";
+    }
+
+    /**
      * Sets the system master volume using amixer (ALSA) or pactl (PulseAudio/PipeWire).
-     * No sudo required — these tools work at user level.
-     * @param levelStr volume level as string, 0–100
      */
     private static String setVolume(String levelStr) {
         try {
@@ -234,15 +319,14 @@ public class SoundServer {
             if (level < 0 || level > 100) {
                 return "ERROR: Volume must be between 0 and 100";
             }
+            lastVolume = level;
 
-            // Try pactl first (PulseAudio / PipeWire — most modern desktops)
             String[] pactlCmd = {"pactl", "set-sink-volume", "@DEFAULT_SINK@", level + "%"};
             if (runCommand(pactlCmd)) {
                 System.out.println("Volume set to " + level + "% via pactl");
                 return "OK: Volume set to " + level + "%";
             }
 
-            // Fallback: amixer (ALSA)
             String[] amixerCmd = {"amixer", "-q", "sset", "Master", level + "%"};
             if (runCommand(amixerCmd)) {
                 System.out.println("Volume set to " + level + "% via amixer");
@@ -256,13 +340,11 @@ public class SoundServer {
         }
     }
 
-    /** Runs a command, returns true if exit code is 0. */
     private static boolean runCommand(String[] cmd) {
         try {
             Process p = new ProcessBuilder(cmd)
                     .redirectErrorStream(true)
                     .start();
-            // Drain output so the process doesn't block
             p.getInputStream().transferTo(OutputStream.nullOutputStream());
             int exit = p.waitFor();
             return exit == 0;
@@ -307,10 +389,10 @@ public class SoundServer {
             currentlyPlayingClip.setFramePosition(0);
             if (shouldLoop) {
                 currentlyPlayingClip.loop(Clip.LOOP_CONTINUOUSLY);
-                isPlaying = true;
             } else {
                 currentlyPlayingClip.start();
             }
+            isPlaying = true;
             System.out.println("Playing sound: " + filename);
             return "OK: Playing " + filename;
         } catch (Exception e) {
